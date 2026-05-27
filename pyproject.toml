@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "franka-panda-mujoco"
+version = "0.1.0"
+description = "7-DOF Franka Panda MuJoCo starter for kinematics, PID, and trajectories."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "fastapi>=0.115",
+  "mujoco>=3.2.0",
+  "numpy>=1.26",
+  "PyYAML>=6.0",
+  "uvicorn[standard]>=0.30",
+]
+
+[project.scripts]
+franka-viewer = "franka_mujoco.viewer:main"
+franka-mujoco = "franka_mujoco.viewer:main"
+franka-dashboard = "franka_mujoco.app:main"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

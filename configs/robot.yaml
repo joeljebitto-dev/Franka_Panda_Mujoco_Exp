@@ -1,0 +1,19 @@
+robot:
+  name: franka_panda
+  model_path: assets/mujoco_menagerie/franka_emika_panda/scene.xml
+  home_keyframe: home
+
+  # Fallback used only if the MuJoCo model does not contain home_keyframe.
+  home_qpos:
+    - 0.0
+    - 0.0
+    - 0.0
+    - -1.57079
+    - 0.0
+    - 1.57079
+    - -0.7853
+    - 0.04
+    - 0.04
+
+simulation:
+  timestep_s: 0.002
