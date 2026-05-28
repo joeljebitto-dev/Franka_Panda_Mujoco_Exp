@@ -7,7 +7,7 @@ import os
 import threading
 import time
 from collections import deque
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -28,11 +28,17 @@ from franka_mujoco.env import FrankaPandaEnv
 from franka_mujoco.kinematics import DampedLeastSquaresIK, MuJoCoKinematics
 from franka_mujoco.trajectory import JointTrajectory
 
-ControlMode = Literal["manual", "pid", "ik", "trajectory", "ai"]
+ControlMode = Literal["manual", "pid", "ik", "trajectory", "python"]
 DEFAULT_RENDER_WIDTH = 640
 DEFAULT_RENDER_HEIGHT = 360
 DEFAULT_RENDER_FPS = 15
 MAX_RENDER_FPS = 30
+DEFAULT_RENDER_CAMERA = {
+    "azimuth": 135.0,
+    "elevation": -25.0,
+    "distance": 1.55,
+    "lookat": [0.3, 0.0, 0.45],
+}
 
 
 class ModeRequest(BaseModel):
@@ -78,6 +84,29 @@ class StepRequest(BaseModel):
     running: bool
 
 
+class FKRequest(BaseModel):
+    q: list[float] | None = Field(default=None, min_length=PANDA_DOF, max_length=PANDA_DOF)
+
+
+class IKRequest(BaseModel):
+    position: list[float] = Field(min_length=3, max_length=3)
+    rotation: list[list[float]] | None = None
+    use_orientation: bool = False
+    initial_q: list[float] | None = Field(default=None, min_length=PANDA_DOF, max_length=PANDA_DOF)
+    apply: bool = False
+    mode_after_solve: ControlMode = "python"
+    orientation_weight: float = Field(default=0.4, gt=0.0)
+
+    @field_validator("rotation")
+    @classmethod
+    def _validate_rotation(cls, value: list[list[float]] | None) -> list[list[float]] | None:
+        if value is None:
+            return value
+        if len(value) != 3 or any(len(row) != 3 for row in value):
+            raise ValueError("rotation must be a 3x3 matrix")
+        return value
+
+
 @dataclass
 class RuntimeEvent:
     time_s: float
@@ -116,7 +145,6 @@ class DashboardRuntime:
         self._sim_fps = 0.0
         self._renderer: Any | None = None
         self._renderer_size: tuple[int, int] | None = None
-        self._render_camera: Any | None = None
         self._render_error: str | None = None
         self._render_fps = 0.0
         self._render_frames_since_tick = 0
@@ -234,6 +262,51 @@ class DashboardRuntime:
             self._add_event("info", f"{request.method} trajectory started")
             return self.telemetry_locked()
 
+    def forward_kinematics(self, request: FKRequest) -> dict[str, Any]:
+        with self.lock:
+            q = request.q
+            pose = self.kinematics.forward(q)
+            jacobian = self.kinematics.jacobian(q)
+            rotation = np.array(pose.rotation, dtype=float)
+            return {
+                "q": list(q) if q is not None else self.env.arm.joint_positions(),
+                "position": list(pose.position),
+                "rotation": [list(row) for row in pose.rotation],
+                "euler_xyz": _rotation_to_euler_xyz(rotation),
+                "quaternion_wxyz": _rotation_to_quaternion(rotation),
+                "transform": _homogeneous_transform(pose.position, pose.rotation),
+                "jacobian": jacobian,
+                "jacobian_condition": self._safe_condition_number(jacobian),
+            }
+
+    def inverse_kinematics(self, request: IKRequest) -> dict[str, Any]:
+        with self.lock:
+            rotation = request.rotation if request.use_orientation else None
+            result = self.ik.solve_pose(
+                target_position=request.position,
+                target_rotation=rotation,
+                initial_q=request.initial_q or self.env.arm.joint_positions(),
+                orientation_weight=request.orientation_weight,
+            )
+            payload = {
+                "success": result.success,
+                "q": result.q,
+                "iterations": result.iterations,
+                "position_error_norm": result.position_error_norm,
+                "orientation_error_norm": result.orientation_error_norm,
+                "weighted_error_norm": result.weighted_error_norm,
+                "message": result.message,
+                "applied": False,
+            }
+            if request.apply and result.success:
+                self.target_q = self.env.arm.clip_to_actuator_ranges(result.q)
+                self.mode = request.mode_after_solve
+                self._add_event("success", f"Python IK target applied in {result.iterations} iterations")
+                payload["applied"] = True
+            elif request.apply:
+                self._add_event("warning", f"Python IK failed: {result.message}")
+            return payload
+
     def telemetry(self) -> dict[str, Any]:
         with self.lock:
             return self.telemetry_locked()
@@ -288,13 +361,18 @@ class DashboardRuntime:
             },
         }
 
-    def render_frame(self, width: int = DEFAULT_RENDER_WIDTH, height: int = DEFAULT_RENDER_HEIGHT) -> bytes:
+    def render_frame(
+        self,
+        width: int = DEFAULT_RENDER_WIDTH,
+        height: int = DEFAULT_RENDER_HEIGHT,
+        camera_state: dict[str, Any] | None = None,
+    ) -> bytes:
         width, height = _clamp_render_size(width, height)
         with self.lock:
             try:
                 renderer = self._renderer_for_size_locked(width, height)
                 self.env.mujoco.mj_forward(self.env.model, self.env.data)
-                renderer.update_scene(self.env.data, camera=self._render_camera_locked())
+                renderer.update_scene(self.env.data, camera=self._render_camera_from_state_locked(camera_state))
                 frame = renderer.render()
                 self._render_error = None
                 self._record_render_frame_locked()
@@ -340,7 +418,7 @@ class DashboardRuntime:
             self.env.arm.command_joint_positions(result.position_targets)
             return
 
-        if self.mode == "manual":
+        if self.mode == "manual" or self.mode == "python":
             self.env.arm.command_joint_positions(self.target_q)
 
     def _record_history_locked(self) -> None:
@@ -402,18 +480,15 @@ class DashboardRuntime:
         self._render_frames_since_tick = 0
         return self._renderer
 
-    def _render_camera_locked(self):
-        if self._render_camera is not None:
-            return self._render_camera
-
+    def _render_camera_from_state_locked(self, camera_state: dict[str, Any] | None):
+        state = _coerce_camera_state(camera_state)
         camera = self.env.mujoco.MjvCamera()
         self.env.mujoco.mjv_defaultFreeCamera(self.env.model, camera)
-        camera.azimuth = 135
-        camera.elevation = -25
-        camera.distance = 1.55
-        camera.lookat[:] = [0.3, 0.0, 0.45]
-        self._render_camera = camera
-        return self._render_camera
+        camera.azimuth = state["azimuth"]
+        camera.elevation = state["elevation"]
+        camera.distance = state["distance"]
+        camera.lookat[:] = state["lookat"]
+        return camera
 
     def _close_renderer_locked(self) -> None:
         if self._renderer is None:
@@ -518,6 +593,14 @@ def create_app() -> FastAPI:
     def start_trajectory(request: TrajectoryRequest) -> dict[str, Any]:
         return runtime.start_trajectory(request)
 
+    @app.post("/api/kinematics/fk")
+    def forward_kinematics(request: FKRequest) -> dict[str, Any]:
+        return runtime.forward_kinematics(request)
+
+    @app.post("/api/kinematics/ik")
+    def inverse_kinematics(request: IKRequest) -> dict[str, Any]:
+        return runtime.inverse_kinematics(request)
+
     @app.websocket("/ws/telemetry")
     async def websocket_telemetry(websocket: WebSocket) -> None:
         await websocket.accept()
@@ -536,6 +619,14 @@ def create_app() -> FastAPI:
         width, height = _clamp_render_size(width, height)
         fps = min(MAX_RENDER_FPS, max(1, _websocket_query_int(websocket, "fps", DEFAULT_RENDER_FPS)))
         frame_interval_s = 1.0 / fps
+        camera_state = _default_camera_state()
+
+        async def receive_camera_messages() -> None:
+            nonlocal camera_state
+            while True:
+                message = await websocket.receive_json()
+                if message.get("type") == "camera":
+                    camera_state = _coerce_camera_state(message)
 
         await websocket.send_json(
             {
@@ -547,11 +638,14 @@ def create_app() -> FastAPI:
             }
         )
 
+        receive_task = asyncio.create_task(receive_camera_messages())
         try:
             while True:
+                if receive_task.done():
+                    break
                 started = time.perf_counter()
                 try:
-                    frame = runtime.render_frame(width=width, height=height)
+                    frame = runtime.render_frame(width=width, height=height, camera_state=camera_state)
                 except Exception as exc:
                     await websocket.send_json(
                         {
@@ -568,6 +662,10 @@ def create_app() -> FastAPI:
                 await asyncio.sleep(max(0.0, frame_interval_s - elapsed))
         except WebSocketDisconnect:
             return
+        finally:
+            receive_task.cancel()
+            with suppress(asyncio.CancelledError, WebSocketDisconnect):
+                await receive_task
 
     frontend_dist = PROJECT_ROOT / "frontend" / "dist"
     if frontend_dist.exists():
@@ -588,6 +686,45 @@ def _clamp_render_size(width: int, height: int) -> tuple[int, int]:
         min(1280, max(160, int(width))),
         min(720, max(90, int(height))),
     )
+
+
+def _default_camera_state() -> dict[str, Any]:
+    return {
+        "azimuth": DEFAULT_RENDER_CAMERA["azimuth"],
+        "elevation": DEFAULT_RENDER_CAMERA["elevation"],
+        "distance": DEFAULT_RENDER_CAMERA["distance"],
+        "lookat": list(DEFAULT_RENDER_CAMERA["lookat"]),
+    }
+
+
+def _coerce_camera_state(camera_state: dict[str, Any] | None) -> dict[str, Any]:
+    state = _default_camera_state()
+    if not camera_state:
+        return state
+
+    state["azimuth"] = _finite_float(camera_state.get("azimuth"), state["azimuth"]) % 360.0
+    state["elevation"] = min(25.0, max(-89.0, _finite_float(camera_state.get("elevation"), state["elevation"])))
+    state["distance"] = min(4.0, max(0.3, _finite_float(camera_state.get("distance"), state["distance"])))
+
+    lookat = camera_state.get("lookat")
+    if isinstance(lookat, (list, tuple)) and len(lookat) == 3:
+        state["lookat"] = [
+            min(1.2, max(-0.6, _finite_float(lookat[0], state["lookat"][0]))),
+            min(0.9, max(-0.9, _finite_float(lookat[1], state["lookat"][1]))),
+            min(1.4, max(0.05, _finite_float(lookat[2], state["lookat"][2]))),
+        ]
+
+    return state
+
+
+def _finite_float(value: Any, fallback: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(number):
+        return fallback
+    return number
 
 
 def _homogeneous_transform(

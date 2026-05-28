@@ -5,11 +5,10 @@ import {
   AlertTriangle,
   BarChart3,
   Box,
-  BrainCircuit,
   CheckCircle2,
-  ClipboardList,
   Gauge,
   Home,
+  Info,
   Pause,
   Play,
   Radio,
@@ -25,19 +24,25 @@ import {
 import "./styles.css";
 
 const API_BASE = "";
-const MODES = ["manual", "pid", "ik", "trajectory", "ai"];
+const MODES = ["manual", "pid", "ik", "python"];
 const MODE_LABELS = {
   manual: "Manual",
   pid: "PID",
   ik: "IK",
   trajectory: "Trajectory",
-  ai: "AI"
+  python: "Python"
 };
 const JOINT_COLORS = ["#0b5fff", "#0f9f6e", "#d97706", "#dc2626", "#7c3aed", "#0891b2", "#334155"];
 const HOME_Q = [0, 0, 0, -1.57079, 0, 1.57079, -0.7853];
 const RENDER_WIDTH = 640;
 const RENDER_HEIGHT = 360;
 const RENDER_FPS = 15;
+const DEFAULT_RENDER_CAMERA = {
+  azimuth: 135,
+  elevation: -25,
+  distance: 1.55,
+  lookat: [0.3, 0, 0.45]
+};
 
 function App() {
   const [telemetry, setTelemetry] = useState(null);
@@ -153,82 +158,121 @@ function App() {
         </div>
       </header>
 
-      <section className="grid">
-        <Panel title="3D MuJoCo Viewport" number="1" icon={<Box size={18} />} className="viewport-panel">
-          <MuJoCoViewport telemetry={telemetry} telemetryConnected={connected} />
-        </Panel>
+      <section className="tile-layout">
+        <div className="tile-column main-column">
+          <Panel
+            title="3D MuJoCo Viewport"
+            icon={<Box size={18} />}
+            info="Live MuJoCo camera stream. Drag to orbit, Shift-drag to pan, scroll to zoom, and double-click to reset."
+            className="viewport-panel"
+          >
+            <MuJoCoViewport telemetry={telemetry} />
+          </Panel>
 
-        <Panel title="Mode Selector" number="2" icon={<Settings2 size={18} />} className="mode-panel">
-          <div className="mode-grid">
-            {MODES.map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                className={`mode-button ${telemetry?.mode === mode ? "active" : ""}`}
-                onClick={() => setMode(mode)}
-                disabled={mode === "ai"}
-                title={mode === "ai" ? "Reserved for future ML control" : `Switch to ${MODE_LABELS[mode]}`}
-              >
-                {mode === "ai" && <BrainCircuit size={15} />}
-                {MODE_LABELS[mode]}
-              </button>
-            ))}
+          <div className="secondary-grid">
+            <Panel
+              title="Cartesian IK Target"
+              icon={<Target size={18} />}
+              info="Solve inverse kinematics for an end-effector position, optionally including roll, pitch, and yaw."
+              className="ik-panel"
+            >
+              <CartesianInputs draft={cartDraft} onChange={setCartDraft} onSubmit={sendCartesian} />
+            </Panel>
+
+            <Panel
+              title="End-Effector Pose"
+              icon={<Target size={18} />}
+              info="Current end-effector position and XYZ Euler orientation from MuJoCo forward kinematics."
+              className="pose-panel"
+            >
+              <PosePanel telemetry={telemetry} />
+            </Panel>
           </div>
-          <div className="command-state">{statusText}</div>
-        </Panel>
+        </div>
 
-        <Panel title="Joint Sliders (q)" number="3" icon={<SlidersHorizontal size={18} />} className="joint-panel">
-          <JointSliders q={draftQ} liveQ={q} limits={limits} onChange={setDraftQ} />
-          <div className="button-row">
-            <button type="button" onClick={() => setDraftQ(Array(7).fill(0))}>All Zero</button>
-            <button type="button" onClick={() => setDraftQ(HOME_Q)}>Home</button>
-            <button type="button" className="primary" onClick={sendJointTarget}><Send size={15} /> Send</button>
-          </div>
-        </Panel>
+        <div className="tile-column control-column">
+          <Panel
+            title="Command Mode"
+            icon={<Settings2 size={18} />}
+            info="Select how the arm target is interpreted. Python mode marks commands coming from the Python client."
+            className="mode-panel"
+          >
+            <div className="mode-grid">
+              {MODES.map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  className={`mode-button ${telemetry?.mode === mode ? "active" : ""}`}
+                  onClick={() => setMode(mode)}
+                  title={`Switch to ${MODE_LABELS[mode]}`}
+                >
+                  {MODE_LABELS[mode]}
+                </button>
+              ))}
+            </div>
+            <div className="command-state">{statusText}</div>
+          </Panel>
 
-        <Panel title="Cartesian Target Inputs" number="4" icon={<Target size={18} />}>
-          <CartesianInputs draft={cartDraft} onChange={setCartDraft} onSubmit={sendCartesian} />
-        </Panel>
+          <Panel
+            title="Joint Targets"
+            icon={<SlidersHorizontal size={18} />}
+            info="Edit the seven joint targets, send them directly, or run a quintic trajectory to the same target."
+            className="joint-panel"
+          >
+            <JointSliders q={draftQ} liveQ={q} limits={limits} onChange={setDraftQ} />
+            <div className="button-row">
+              <button type="button" onClick={() => setDraftQ(Array(7).fill(0))}>Zero</button>
+              <button type="button" onClick={() => setDraftQ(HOME_Q)}><Home size={15} /> Home</button>
+              <button type="button" className="primary" onClick={sendJointTarget}><Send size={15} /> Send</button>
+              <button type="button" onClick={startTrajectory}><Route size={15} /> Traj</button>
+            </div>
+          </Panel>
 
-        <Panel title="PID Gain Editor" number="5" icon={<Gauge size={18} />}>
-          <PidEditor draft={pidDraft} onChange={setPidDraft} onSubmit={applyPid} />
-        </Panel>
+          <Panel
+            title="PID Gains"
+            icon={<Gauge size={18} />}
+            info="Configure the joint-space PID gains used by PID and IK tracking modes."
+            className="pid-panel"
+          >
+            <PidEditor draft={pidDraft} onChange={setPidDraft} onSubmit={applyPid} />
+          </Panel>
+        </div>
 
-        <Panel title="End-Effector Pose" number="6" icon={<Target size={18} />}>
-          <PosePanel telemetry={telemetry} />
-        </Panel>
+        <div className="tile-column diagnostic-column">
+          <Panel
+            title="Jacobian Matrix"
+            icon={<BarChart3 size={18} />}
+            info="Heatmap of the current 6x7 end-effector Jacobian plus its condition number."
+            className="jacobian-panel"
+          >
+            <JacobianHeatmap matrix={telemetry?.jacobian ?? zeroMatrix(6, 7)} />
+            <div className="condition-row">
+              <span>Condition Number</span>
+              <strong>{formatNumber(telemetry?.jacobian_condition, 2)}</strong>
+            </div>
+          </Panel>
 
-        <Panel title="Transformation Matrix" number="7" icon={<ClipboardList size={18} />}>
-          <Matrix values={telemetry?.transform ?? identity4()} />
-        </Panel>
+          <Panel
+            title="Events"
+            icon={<AlertTriangle size={18} />}
+            info="Runtime messages from reset, mode changes, trajectories, IK solves, and render status."
+            className="events-panel"
+          >
+            <EventLog events={telemetry?.events ?? []} />
+          </Panel>
+        </div>
 
-        <Panel title="Rotation / Euler / Quaternion" number="8" icon={<RotateCcw size={18} />}>
-          <RotationPanel telemetry={telemetry} />
-        </Panel>
-
-        <Panel title="Jacobian Matrix (J)" number="9" icon={<BarChart3 size={18} />} className="jacobian-panel">
-          <JacobianHeatmap matrix={telemetry?.jacobian ?? zeroMatrix(6, 7)} />
-          <div className="condition-row">
-            <span>Condition Number</span>
-            <strong>{formatNumber(telemetry?.jacobian_condition, 2)}</strong>
-          </div>
-        </Panel>
-
-        <Panel title="Telemetry & System State" number="10" icon={<Activity size={18} />}>
-          <TelemetryPanel telemetry={telemetry} connected={connected} />
-        </Panel>
-
-        <Panel title="Live Plots" number="11" icon={<Activity size={18} />} className="plots-panel">
+        <Panel
+          title="Live Plots"
+          icon={<Activity size={18} />}
+          info="Rolling traces for joint positions, joint error, and Cartesian IK error."
+          className="plots-panel"
+        >
           <div className="plot-grid">
             <LineChart title="Joint Position Tracking" history={telemetry?.history ?? []} series={jointSeries("q")} />
             <LineChart title="Joint Error" history={telemetry?.history ?? []} series={jointSeries("q_error")} />
             <LineChart title="Cartesian Error" history={telemetry?.history ?? []} series={[{ label: "err", color: "#dc2626", get: (p) => p.cartesian_error ?? 0 }]} />
           </div>
-        </Panel>
-
-        <Panel title="Event Log / Alerts" number="12" icon={<AlertTriangle size={18} />} className="events-panel">
-          <EventLog events={telemetry?.events ?? []} />
-          <button type="button" className="wide-button" onClick={startTrajectory}><Route size={15} /> Run Quintic Trajectory</button>
         </Panel>
       </section>
     </main>
@@ -285,14 +329,27 @@ function useTelemetry(setTelemetry, setConnected, setStatusText) {
   }, [setConnected, setStatusText, setTelemetry]);
 }
 
-function Panel({ title, number, icon, className = "", children }) {
+function Panel({ title, icon, info, className = "", children }) {
+  const [showInfo, setShowInfo] = useState(false);
   return (
     <section className={`panel ${className}`}>
       <div className="panel-title">
-        <span className="panel-number">{number}</span>
         {icon}
         <h2>{title}</h2>
+        {info && (
+          <button
+            className="panel-info-button"
+            type="button"
+            title={`About ${title}`}
+            aria-label={`About ${title}`}
+            aria-expanded={showInfo}
+            onClick={() => setShowInfo((visible) => !visible)}
+          >
+            <Info size={14} />
+          </button>
+        )}
       </div>
+      {showInfo && <div className="panel-info">{info}</div>}
       {children}
     </section>
   );
@@ -316,20 +373,29 @@ function Metric({ label, value }) {
   );
 }
 
-function MuJoCoViewport({ telemetry, telemetryConnected }) {
+function MuJoCoViewport({ telemetry }) {
   const canvasRef = useRef(null);
   const render = useMuJoCoRender(canvasRef);
   const ee = telemetry?.ee_position ?? [0, 0, 0];
   const statusText = render.error ? "error" : render.connected ? "live" : "connecting";
 
   return (
-    <div className="viewport render-viewport">
+    <div className={`viewport render-viewport ${render.interacting ? "interacting" : ""}`}>
       <canvas
         ref={canvasRef}
         width={render.width}
         height={render.height}
         role="img"
         aria-label="Live MuJoCo 3D render"
+        title="Drag to orbit. Shift-drag to pan. Scroll to zoom. Double-click to reset."
+        tabIndex={0}
+        onPointerDown={render.onPointerDown}
+        onPointerMove={render.onPointerMove}
+        onPointerUp={render.onPointerUp}
+        onPointerCancel={render.onPointerUp}
+        onWheel={render.onWheel}
+        onDoubleClick={render.resetCamera}
+        onContextMenu={(event) => event.preventDefault()}
       />
       {(!render.connected || render.error) && (
         <div className="render-placeholder">
@@ -341,7 +407,11 @@ function MuJoCoViewport({ telemetry, telemetryConnected }) {
       <div className="render-badges">
         <span className={`render-chip ${render.error ? "bad" : render.connected ? "ok" : ""}`}>{statusText}</span>
         <span className="render-chip">{formatNumber(render.fps, 1)} fps</span>
-        <span className={`render-chip ${telemetryConnected ? "ok" : ""}`}>{telemetryConnected ? "telemetry" : "polling"}</span>
+      </div>
+      <div className="viewport-tools">
+        <button className="render-icon-button" type="button" title="Reset camera" onClick={render.resetCamera}>
+          <RotateCcw size={14} />
+        </button>
       </div>
       <div className="viewport-readout">
         <span>ee</span>
@@ -352,14 +422,97 @@ function MuJoCoViewport({ telemetry, telemetryConnected }) {
 }
 
 function useMuJoCoRender(canvasRef) {
+  const socketRef = useRef(null);
+  const cameraRef = useRef(defaultRenderCamera());
+  const interactionRef = useRef({ active: false, mode: "orbit", pointerId: null, lastX: 0, lastY: 0 });
   const [state, setState] = useState({
+    camera: defaultRenderCamera(),
     connected: false,
     error: null,
     fps: 0,
     frames: 0,
     height: RENDER_HEIGHT,
+    interacting: false,
     width: RENDER_WIDTH
   });
+
+  const sendCamera = (camera) => {
+    const socket = socketRef.current;
+    if (socket?.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: "camera", ...camera }));
+    }
+  };
+
+  const updateCamera = (nextCamera) => {
+    const camera = normalizeCamera(nextCamera);
+    cameraRef.current = camera;
+    setState((current) => ({ ...current, camera }));
+    sendCamera(camera);
+  };
+
+  const resetCamera = () => updateCamera(defaultRenderCamera());
+
+  const onPointerDown = (event) => {
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    interactionRef.current = {
+      active: true,
+      mode: event.shiftKey || event.button === 1 || event.button === 2 ? "pan" : "orbit",
+      pointerId: event.pointerId,
+      lastX: event.clientX,
+      lastY: event.clientY
+    };
+    setState((current) => ({ ...current, interacting: true }));
+  };
+
+  const onPointerMove = (event) => {
+    const interaction = interactionRef.current;
+    if (!interaction.active || interaction.pointerId !== event.pointerId) return;
+    event.preventDefault();
+
+    const dx = event.clientX - interaction.lastX;
+    const dy = event.clientY - interaction.lastY;
+    interaction.lastX = event.clientX;
+    interaction.lastY = event.clientY;
+
+    const camera = cameraRef.current;
+    if (interaction.mode === "pan") {
+      const azimuth = degToRad(camera.azimuth);
+      const right = [Math.cos(azimuth), Math.sin(azimuth)];
+      const scale = camera.distance * 0.0017;
+      updateCamera({
+        ...camera,
+        lookat: [
+          camera.lookat[0] - right[0] * dx * scale,
+          camera.lookat[1] - right[1] * dx * scale,
+          camera.lookat[2] + dy * scale
+        ]
+      });
+      return;
+    }
+
+    updateCamera({
+      ...camera,
+      azimuth: camera.azimuth - dx * 0.35,
+      elevation: camera.elevation - dy * 0.25
+    });
+  };
+
+  const onPointerUp = (event) => {
+    const interaction = interactionRef.current;
+    if (interaction.pointerId !== event.pointerId) return;
+    interactionRef.current = { active: false, mode: "orbit", pointerId: null, lastX: 0, lastY: 0 };
+    setState((current) => ({ ...current, interacting: false }));
+  };
+
+  const onWheel = (event) => {
+    event.preventDefault();
+    const camera = cameraRef.current;
+    updateCamera({
+      ...camera,
+      distance: camera.distance * Math.exp(event.deltaY * 0.001)
+    });
+  };
 
   useEffect(() => {
     let socket;
@@ -422,10 +575,12 @@ function useMuJoCoRender(canvasRef) {
         fps: String(RENDER_FPS)
       });
       socket = new WebSocket(`${scheme}://${window.location.host}/ws/render?${params}`);
+      socketRef.current = socket;
       socket.binaryType = "arraybuffer";
 
       socket.onopen = () => {
         setState((current) => ({ ...current, connected: true, error: null }));
+        sendCamera(cameraRef.current);
       };
 
       socket.onmessage = (event) => {
@@ -468,10 +623,18 @@ function useMuJoCoRender(canvasRef) {
       closed = true;
       if (reconnectTimer) window.clearTimeout(reconnectTimer);
       if (socket) socket.close();
+      if (socketRef.current === socket) socketRef.current = null;
     };
   }, [canvasRef]);
 
-  return state;
+  return {
+    ...state,
+    onPointerDown,
+    onPointerMove,
+    onPointerUp,
+    onWheel,
+    resetCamera
+  };
 }
 
 function JointSliders({ q, liveQ, limits, onChange }) {
@@ -557,31 +720,6 @@ function PosePanel({ telemetry }) {
   );
 }
 
-function RotationPanel({ telemetry }) {
-  const rotation = telemetry?.ee_rotation ?? zeroMatrix(3, 3);
-  const quaternion = telemetry?.ee_quaternion_wxyz ?? [1, 0, 0, 0];
-  return (
-    <div className="rotation-stack">
-      <Matrix values={rotation} compact />
-      <div className="chip-row">
-        {["w", "x", "y", "z"].map((label, index) => (
-          <span className="value-chip" key={label}>{label}: {formatNumber(quaternion[index], 3)}</span>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function Matrix({ values, compact = false }) {
-  return (
-    <div className={`matrix ${compact ? "compact" : ""}`}>
-      {values.flat().map((value, index) => (
-        <span key={index}>{formatNumber(value, 3)}</span>
-      ))}
-    </div>
-  );
-}
-
 function JacobianHeatmap({ matrix }) {
   const max = Math.max(0.001, ...matrix.flat().map((v) => Math.abs(v)));
   return (
@@ -597,19 +735,6 @@ function JacobianHeatmap({ matrix }) {
         )))}
       </div>
       <div className="heatmap-labels cols">{Array.from({ length: 7 }, (_, i) => <span key={i}>q{i + 1}</span>)}</div>
-    </div>
-  );
-}
-
-function TelemetryPanel({ telemetry, connected }) {
-  return (
-    <div className="kv-table">
-      <Row label="WebSocket" value={connected ? "Connected" : "Fallback"} />
-      <Row label="Sim Time" value={`${formatNumber(telemetry?.time_s, 3)} s`} />
-      <Row label="Backend" value={`${formatNumber(telemetry?.metrics?.backend_latency_ms, 2)} ms`} />
-      <Row label="MuJoCo" value={telemetry?.metrics?.mujoco_status ?? "ok"} />
-      <Row label="History" value={telemetry?.metrics?.history_points ?? 0} />
-      <Row label="Running" value={telemetry?.running ? "yes" : "no"} />
     </div>
   );
 }
@@ -705,6 +830,40 @@ function coercePid(draft) {
   };
 }
 
+function defaultRenderCamera() {
+  return {
+    ...DEFAULT_RENDER_CAMERA,
+    lookat: [...DEFAULT_RENDER_CAMERA.lookat]
+  };
+}
+
+function normalizeCamera(camera) {
+  const lookat = camera.lookat ?? DEFAULT_RENDER_CAMERA.lookat;
+  return {
+    azimuth: wrapDegrees(numberOrFallback(camera.azimuth, DEFAULT_RENDER_CAMERA.azimuth)),
+    elevation: clamp(numberOrFallback(camera.elevation, DEFAULT_RENDER_CAMERA.elevation), -89, 25),
+    distance: clamp(numberOrFallback(camera.distance, DEFAULT_RENDER_CAMERA.distance), 0.3, 4),
+    lookat: [
+      clamp(numberOrFallback(lookat[0], DEFAULT_RENDER_CAMERA.lookat[0]), -0.6, 1.2),
+      clamp(numberOrFallback(lookat[1], DEFAULT_RENDER_CAMERA.lookat[1]), -0.9, 0.9),
+      clamp(numberOrFallback(lookat[2], DEFAULT_RENDER_CAMERA.lookat[2]), 0.05, 1.4)
+    ]
+  };
+}
+
+function numberOrFallback(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, value));
+}
+
+function wrapDegrees(value) {
+  return ((value % 360) + 360) % 360;
+}
+
 function numberOrFirst(value, fallback) {
   if (Array.isArray(value)) return Number(value[0] ?? fallback);
   return Number(value ?? fallback);
@@ -712,15 +871,6 @@ function numberOrFirst(value, fallback) {
 
 function zeroMatrix(rows, cols) {
   return Array.from({ length: rows }, () => Array(cols).fill(0));
-}
-
-function identity4() {
-  return [
-    [1, 0, 0, 0],
-    [0, 1, 0, 0],
-    [0, 0, 1, 0],
-    [0, 0, 0, 1]
-  ];
 }
 
 function heatColor(value) {

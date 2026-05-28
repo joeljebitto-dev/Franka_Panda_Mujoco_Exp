@@ -1,6 +1,7 @@
 """7-DOF Franka Panda MuJoCo starter."""
 
 from franka_mujoco.arm import FrankaPandaArm
+from franka_mujoco.client import DEFAULT_DASHBOARD_URL, DashboardAPIError, FrankaDashboardClient
 from franka_mujoco.config import ProjectConfig, RobotConfig, SimulationConfig
 from franka_mujoco.constants import PANDA_DOF
 from franka_mujoco.control import JointPIDController, PIDResult
@@ -11,7 +12,10 @@ from franka_mujoco.trajectory import JointTrajectory, JointTrajectoryPoint
 
 __all__ = [
     "DampedLeastSquaresIK",
+    "DEFAULT_DASHBOARD_URL",
+    "DashboardAPIError",
     "FrankaPandaArm",
+    "FrankaDashboardClient",
     "FrankaPandaEnv",
     "IKResult",
     "JointPIDController",
