@@ -159,108 +159,100 @@ function App() {
       </header>
 
       <section className="tile-layout">
-        <div className="tile-column main-column">
-          <Panel
-            title="3D MuJoCo Viewport"
-            icon={<Box size={18} />}
-            info="Live MuJoCo camera stream. Drag to orbit, Shift-drag to pan, scroll to zoom, and double-click to reset."
-            className="viewport-panel"
-          >
-            <MuJoCoViewport telemetry={telemetry} />
-          </Panel>
+        <Panel
+          title="3D MuJoCo Viewport"
+          icon={<Box size={18} />}
+          info="Live MuJoCo camera stream. Drag to orbit, Shift-drag to pan, scroll to zoom, and double-click to reset."
+          className="viewport-panel"
+        >
+          <MuJoCoViewport telemetry={telemetry} />
+        </Panel>
 
-          <div className="secondary-grid">
-            <Panel
-              title="Cartesian IK Target"
-              icon={<Target size={18} />}
-              info="Solve inverse kinematics for an end-effector position, optionally including roll, pitch, and yaw."
-              className="ik-panel"
-            >
-              <CartesianInputs draft={cartDraft} onChange={setCartDraft} onSubmit={sendCartesian} />
-            </Panel>
-
-            <Panel
-              title="End-Effector Pose"
-              icon={<Target size={18} />}
-              info="Current end-effector position and XYZ Euler orientation from MuJoCo forward kinematics."
-              className="pose-panel"
-            >
-              <PosePanel telemetry={telemetry} />
-            </Panel>
+        <Panel
+          title="Command Mode"
+          icon={<Settings2 size={18} />}
+          info="Select how the arm target is interpreted. Python mode marks commands coming from the Python client."
+          className="mode-panel"
+        >
+          <div className="mode-grid">
+            {MODES.map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                className={`mode-button ${telemetry?.mode === mode ? "active" : ""}`}
+                onClick={() => setMode(mode)}
+                title={`Switch to ${MODE_LABELS[mode]}`}
+              >
+                {MODE_LABELS[mode]}
+              </button>
+            ))}
           </div>
-        </div>
+          <div className="command-state">{statusText}</div>
+        </Panel>
 
-        <div className="tile-column control-column">
-          <Panel
-            title="Command Mode"
-            icon={<Settings2 size={18} />}
-            info="Select how the arm target is interpreted. Python mode marks commands coming from the Python client."
-            className="mode-panel"
-          >
-            <div className="mode-grid">
-              {MODES.map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  className={`mode-button ${telemetry?.mode === mode ? "active" : ""}`}
-                  onClick={() => setMode(mode)}
-                  title={`Switch to ${MODE_LABELS[mode]}`}
-                >
-                  {MODE_LABELS[mode]}
-                </button>
-              ))}
-            </div>
-            <div className="command-state">{statusText}</div>
-          </Panel>
+        <Panel
+          title="Events"
+          icon={<AlertTriangle size={18} />}
+          info="Runtime messages from reset, mode changes, trajectories, IK solves, and render status."
+          className="events-panel"
+        >
+          <EventLog events={telemetry?.events ?? []} />
+        </Panel>
 
-          <Panel
-            title="Joint Targets"
-            icon={<SlidersHorizontal size={18} />}
-            info="Edit the seven joint targets, send them directly, or run a quintic trajectory to the same target."
-            className="joint-panel"
-          >
-            <JointSliders q={draftQ} liveQ={q} limits={limits} onChange={setDraftQ} />
-            <div className="button-row">
-              <button type="button" onClick={() => setDraftQ(Array(7).fill(0))}>Zero</button>
-              <button type="button" onClick={() => setDraftQ(HOME_Q)}><Home size={15} /> Home</button>
-              <button type="button" className="primary" onClick={sendJointTarget}><Send size={15} /> Send</button>
-              <button type="button" onClick={startTrajectory}><Route size={15} /> Traj</button>
-            </div>
-          </Panel>
+        <Panel
+          title="Joint Targets"
+          icon={<SlidersHorizontal size={18} />}
+          info="Edit the seven joint targets, send them directly, or run a quintic trajectory to the same target."
+          className="joint-panel"
+        >
+          <JointSliders q={draftQ} liveQ={q} limits={limits} onChange={setDraftQ} />
+          <div className="button-row">
+            <button type="button" onClick={() => setDraftQ(Array(7).fill(0))}>Zero</button>
+            <button type="button" onClick={() => setDraftQ(HOME_Q)}><Home size={15} /> Home</button>
+            <button type="button" className="primary" onClick={sendJointTarget}><Send size={15} /> Send</button>
+            <button type="button" onClick={startTrajectory}><Route size={15} /> Traj</button>
+          </div>
+        </Panel>
 
-          <Panel
-            title="PID Gains"
-            icon={<Gauge size={18} />}
-            info="Configure the joint-space PID gains used by PID and IK tracking modes."
-            className="pid-panel"
-          >
-            <PidEditor draft={pidDraft} onChange={setPidDraft} onSubmit={applyPid} />
-          </Panel>
-        </div>
+        <Panel
+          title="Cartesian IK Target"
+          icon={<Target size={18} />}
+          info="Solve inverse kinematics for an end-effector position, optionally including roll, pitch, and yaw."
+          className="ik-panel"
+        >
+          <CartesianInputs draft={cartDraft} onChange={setCartDraft} onSubmit={sendCartesian} />
+        </Panel>
 
-        <div className="tile-column diagnostic-column">
-          <Panel
-            title="Jacobian Matrix"
-            icon={<BarChart3 size={18} />}
-            info="Heatmap of the current 6x7 end-effector Jacobian plus its condition number."
-            className="jacobian-panel"
-          >
-            <JacobianHeatmap matrix={telemetry?.jacobian ?? zeroMatrix(6, 7)} />
-            <div className="condition-row">
-              <span>Condition Number</span>
-              <strong>{formatNumber(telemetry?.jacobian_condition, 2)}</strong>
-            </div>
-          </Panel>
+        <Panel
+          title="Jacobian Matrix"
+          icon={<BarChart3 size={18} />}
+          info="Heatmap of the current 6x7 end-effector Jacobian plus its condition number."
+          className="jacobian-panel"
+        >
+          <JacobianHeatmap matrix={telemetry?.jacobian ?? zeroMatrix(6, 7)} />
+          <div className="condition-row">
+            <span>Condition Number</span>
+            <strong>{formatNumber(telemetry?.jacobian_condition, 2)}</strong>
+          </div>
+        </Panel>
 
-          <Panel
-            title="Events"
-            icon={<AlertTriangle size={18} />}
-            info="Runtime messages from reset, mode changes, trajectories, IK solves, and render status."
-            className="events-panel"
-          >
-            <EventLog events={telemetry?.events ?? []} />
-          </Panel>
-        </div>
+        <Panel
+          title="End-Effector Pose"
+          icon={<Target size={18} />}
+          info="Current end-effector position and XYZ Euler orientation from MuJoCo forward kinematics."
+          className="pose-panel"
+        >
+          <PosePanel telemetry={telemetry} />
+        </Panel>
+
+        <Panel
+          title="PID Gains"
+          icon={<Gauge size={18} />}
+          info="Configure the joint-space PID gains used by PID and IK tracking modes."
+          className="pid-panel"
+        >
+          <PidEditor draft={pidDraft} onChange={setPidDraft} onSubmit={applyPid} />
+        </Panel>
 
         <Panel
           title="Live Plots"

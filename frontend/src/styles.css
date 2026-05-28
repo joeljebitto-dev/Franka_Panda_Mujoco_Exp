@@ -159,9 +159,10 @@ input[type="range"] {
 .panel {
   background: #ffffff;
   border: 1px solid #b9c9df;
-  border-radius: 8px;
+  border-radius: 4px;
   display: flex;
   flex-direction: column;
+  height: 100%;
   min-width: 0;
   overflow: hidden;
   padding: 12px;
@@ -205,45 +206,57 @@ input[type="range"] {
   display: grid;
   gap: 10px;
   grid-template-columns: minmax(520px, 1.65fr) minmax(280px, 0.85fr) minmax(280px, 0.85fr);
+  grid-template-areas:
+    "viewport mode events"
+    "viewport joint events"
+    "ik joint jacobian"
+    "pose pid jacobian"
+    "plots plots plots";
   padding-top: 14px;
 }
 
-.tile-column {
-  align-content: stretch;
-  align-self: stretch;
-  display: grid;
-  gap: 10px;
-  min-width: 0;
+.viewport-panel {
+  grid-area: viewport;
 }
 
-.main-column {
-  grid-template-rows: auto minmax(0, 1fr);
+.mode-panel {
+  grid-area: mode;
 }
 
-.control-column {
-  grid-template-rows: auto auto minmax(0, 1fr);
-}
-
-.diagnostic-column {
-  grid-template-rows: auto minmax(0, 1fr);
-}
-
-.secondary-grid {
-  align-items: stretch;
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+.events-panel {
+  grid-area: events;
   min-height: 0;
 }
 
+.joint-panel {
+  grid-area: joint;
+}
+
+.ik-panel {
+  grid-area: ik;
+}
+
+.jacobian-panel {
+  grid-area: jacobian;
+}
+
+.pose-panel {
+  grid-area: pose;
+}
+
+.pid-panel {
+  grid-area: pid;
+}
+
 .plots-panel {
-  grid-column: 1 / -1;
+  grid-area: plots;
 }
 
 .viewport {
   background: #101828;
   border: 1px solid #1f2a3d;
   border-radius: 7px;
+  flex: 1;
   min-height: 360px;
   overflow: hidden;
   position: relative;
@@ -357,7 +370,7 @@ input[type="range"] {
 .mode-grid {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .mode-button {
@@ -592,24 +605,17 @@ input[type="range"] {
 @media (max-width: 1180px) {
   .tile-layout {
     grid-template-columns: minmax(0, 1fr) minmax(300px, 0.7fr);
-  }
-
-  .main-column {
-    grid-column: 1;
-  }
-
-  .control-column {
-    grid-column: 2;
-  }
-
-  .diagnostic-column {
-    grid-column: 1 / -1;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    grid-template-rows: none;
+    grid-template-areas:
+      "viewport mode"
+      "viewport joint"
+      "ik joint"
+      "pose pid"
+      "jacobian events"
+      "plots plots";
   }
 
   .mode-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
 
@@ -631,21 +637,22 @@ input[type="range"] {
     justify-content: flex-start;
   }
 
-  .tile-layout,
-  .plot-grid {
+  .tile-layout {
     align-items: start;
+    grid-template-areas:
+      "viewport"
+      "mode"
+      "joint"
+      "ik"
+      "pose"
+      "pid"
+      "jacobian"
+      "events"
+      "plots";
     grid-template-columns: 1fr;
   }
 
-  .main-column,
-  .control-column,
-  .diagnostic-column {
-    grid-column: 1;
-    grid-template-rows: none;
-  }
-
-  .secondary-grid,
-  .diagnostic-column {
+  .plot-grid {
     grid-template-columns: 1fr;
   }
 
