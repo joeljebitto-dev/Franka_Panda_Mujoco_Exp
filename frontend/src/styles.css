@@ -215,37 +215,77 @@ input[type="range"] {
 }
 
 .viewport {
-  min-height: 385px;
+  background: #101828;
+  border: 1px solid #1f2a3d;
+  border-radius: 7px;
+  min-height: 360px;
+  overflow: hidden;
   position: relative;
 }
 
-.viewport svg {
+.render-viewport canvas {
+  background: #101828;
   display: block;
-  height: 350px;
+  height: 100%;
+  min-height: 360px;
   width: 100%;
 }
 
-.axis {
-  font-size: 14px;
+.render-placeholder {
+  align-items: center;
+  background: rgba(15, 23, 42, 0.84);
+  color: #e5eefb;
+  display: grid;
+  gap: 7px;
+  inset: 0;
+  justify-items: center;
+  padding: 20px;
+  position: absolute;
+  text-align: center;
+}
+
+.render-placeholder span {
+  color: #b7c4d8;
+  max-width: min(420px, 90%);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.render-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-end;
+  position: absolute;
+  right: 8px;
+  top: 8px;
+}
+
+.render-chip {
+  background: rgba(15, 23, 42, 0.82);
+  border: 1px solid rgba(226, 232, 240, 0.22);
+  border-radius: 999px;
+  color: #dbe7f6;
+  font-size: 12px;
   font-weight: 800;
+  line-height: 1;
+  padding: 7px 9px;
+  text-transform: uppercase;
 }
 
-.axis.red {
-  fill: #dc2626;
+.render-chip.ok {
+  color: #86efac;
 }
 
-.axis.green {
-  fill: #0f9f6e;
-}
-
-.axis.blue {
-  fill: #0b5fff;
+.render-chip.bad {
+  color: #fca5a5;
 }
 
 .viewport-readout {
   align-items: center;
-  background: #f8fafc;
-  border: 1px solid #d6e0ee;
+  background: rgba(248, 250, 252, 0.93);
+  border: 1px solid rgba(214, 224, 238, 0.9);
   border-radius: 7px;
   bottom: 8px;
   display: flex;
@@ -575,10 +615,10 @@ input[type="range"] {
   }
 
   .viewport {
-    min-height: 300px;
+    min-height: 230px;
   }
 
-  .viewport svg {
-    height: 280px;
+  .render-viewport canvas {
+    min-height: 230px;
   }
 }

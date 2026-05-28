@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import math
+import os
 import threading
 import time
 from collections import deque
@@ -10,6 +11,9 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
+
+# The web dashboard renders offscreen; keep the native viewer free to use GLFW.
+os.environ.setdefault("MUJOCO_GL", "egl")
 
 import numpy as np
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -25,6 +29,10 @@ from franka_mujoco.kinematics import DampedLeastSquaresIK, MuJoCoKinematics
 from franka_mujoco.trajectory import JointTrajectory
 
 ControlMode = Literal["manual", "pid", "ik", "trajectory", "ai"]
+DEFAULT_RENDER_WIDTH = 640
+DEFAULT_RENDER_HEIGHT = 360
+DEFAULT_RENDER_FPS = 15
+MAX_RENDER_FPS = 30
 
 
 class ModeRequest(BaseModel):
@@ -106,6 +114,13 @@ class DashboardRuntime:
         self._last_wall_tick = time.perf_counter()
         self._sim_steps_since_tick = 0
         self._sim_fps = 0.0
+        self._renderer: Any | None = None
+        self._renderer_size: tuple[int, int] | None = None
+        self._render_camera: Any | None = None
+        self._render_error: str | None = None
+        self._render_fps = 0.0
+        self._render_frames_since_tick = 0
+        self._last_render_tick = time.perf_counter()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._add_event("info", "Dashboard runtime initialized")
@@ -121,6 +136,8 @@ class DashboardRuntime:
         self._stop_event.set()
         if self._thread:
             self._thread.join(timeout=2.0)
+        with self.lock:
+            self._close_renderer_locked()
 
     def set_mode(self, mode: ControlMode) -> dict[str, Any]:
         with self.lock:
@@ -262,6 +279,7 @@ class DashboardRuntime:
             "trajectory": self._trajectory_status_locked(),
             "events": [event.as_dict() for event in reversed(self.events)],
             "history": list(self.history),
+            "render": self._render_status_locked(),
             "metrics": {
                 "sim_fps": self._sim_fps,
                 "backend_latency_ms": backend_latency_ms,
@@ -269,6 +287,21 @@ class DashboardRuntime:
                 "mujoco_status": "ok",
             },
         }
+
+    def render_frame(self, width: int = DEFAULT_RENDER_WIDTH, height: int = DEFAULT_RENDER_HEIGHT) -> bytes:
+        width, height = _clamp_render_size(width, height)
+        with self.lock:
+            try:
+                renderer = self._renderer_for_size_locked(width, height)
+                self.env.mujoco.mj_forward(self.env.model, self.env.data)
+                renderer.update_scene(self.env.data, camera=self._render_camera_locked())
+                frame = renderer.render()
+                self._render_error = None
+                self._record_render_frame_locked()
+                return frame.tobytes()
+            except Exception as exc:
+                self._set_render_error_locked(exc)
+                raise
 
     def _run_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -356,6 +389,74 @@ class DashboardRuntime:
         except np.linalg.LinAlgError:
             return float("inf")
 
+    def _renderer_for_size_locked(self, width: int, height: int):
+        size = (width, height)
+        if self._renderer is not None and self._renderer_size == size:
+            return self._renderer
+
+        self._close_renderer_locked()
+        self._renderer = self.env.mujoco.Renderer(self.env.model, height=height, width=width)
+        self._renderer_size = size
+        self._render_error = None
+        self._last_render_tick = time.perf_counter()
+        self._render_frames_since_tick = 0
+        return self._renderer
+
+    def _render_camera_locked(self):
+        if self._render_camera is not None:
+            return self._render_camera
+
+        camera = self.env.mujoco.MjvCamera()
+        self.env.mujoco.mjv_defaultFreeCamera(self.env.model, camera)
+        camera.azimuth = 135
+        camera.elevation = -25
+        camera.distance = 1.55
+        camera.lookat[:] = [0.3, 0.0, 0.45]
+        self._render_camera = camera
+        return self._render_camera
+
+    def _close_renderer_locked(self) -> None:
+        if self._renderer is None:
+            return
+        try:
+            self._renderer.close()
+        finally:
+            self._renderer = None
+            self._renderer_size = None
+
+    def _record_render_frame_locked(self) -> None:
+        self._render_frames_since_tick += 1
+        now = time.perf_counter()
+        elapsed = now - self._last_render_tick
+        if elapsed < 1.0:
+            return
+        self._render_fps = self._render_frames_since_tick / elapsed
+        self._render_frames_since_tick = 0
+        self._last_render_tick = now
+
+    def _set_render_error_locked(self, exc: Exception) -> None:
+        message = str(exc) or exc.__class__.__name__
+        if message != self._render_error:
+            self._add_event("warning", f"Render stream unavailable: {message}")
+        self._render_error = message
+
+    def _render_status_locked(self) -> dict[str, Any]:
+        width, height = self._renderer_size or (DEFAULT_RENDER_WIDTH, DEFAULT_RENDER_HEIGHT)
+        if self._render_error:
+            status = "error"
+        elif self._renderer is None:
+            status = "idle"
+        else:
+            status = "ok"
+        return {
+            "status": status,
+            "width": width,
+            "height": height,
+            "fps": self._render_fps,
+            "error": self._render_error,
+            "backend": os.environ.get("MUJOCO_GL", "default"),
+        }
+
     def _add_event(self, level: str, message: str) -> None:
         self.events.append(RuntimeEvent(time_s=self.env.time, level=level, message=message))
 
@@ -427,11 +528,66 @@ def create_app() -> FastAPI:
         except WebSocketDisconnect:
             return
 
+    @app.websocket("/ws/render")
+    async def websocket_render(websocket: WebSocket) -> None:
+        await websocket.accept()
+        width = _websocket_query_int(websocket, "width", DEFAULT_RENDER_WIDTH)
+        height = _websocket_query_int(websocket, "height", DEFAULT_RENDER_HEIGHT)
+        width, height = _clamp_render_size(width, height)
+        fps = min(MAX_RENDER_FPS, max(1, _websocket_query_int(websocket, "fps", DEFAULT_RENDER_FPS)))
+        frame_interval_s = 1.0 / fps
+
+        await websocket.send_json(
+            {
+                "type": "render-info",
+                "width": width,
+                "height": height,
+                "fps": fps,
+                "format": "rgb8",
+            }
+        )
+
+        try:
+            while True:
+                started = time.perf_counter()
+                try:
+                    frame = runtime.render_frame(width=width, height=height)
+                except Exception as exc:
+                    await websocket.send_json(
+                        {
+                            "type": "render-error",
+                            "message": str(exc) or exc.__class__.__name__,
+                            "backend": os.environ.get("MUJOCO_GL", "default"),
+                        }
+                    )
+                    await asyncio.sleep(1.0)
+                    continue
+
+                await websocket.send_bytes(frame)
+                elapsed = time.perf_counter() - started
+                await asyncio.sleep(max(0.0, frame_interval_s - elapsed))
+        except WebSocketDisconnect:
+            return
+
     frontend_dist = PROJECT_ROOT / "frontend" / "dist"
     if frontend_dist.exists():
         app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="frontend")
 
     return app
+
+
+def _websocket_query_int(websocket: WebSocket, key: str, default: int) -> int:
+    try:
+        return int(websocket.query_params.get(key, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _clamp_render_size(width: int, height: int) -> tuple[int, int]:
+    return (
+        min(1280, max(160, int(width))),
+        min(720, max(90, int(height))),
+    )
 
 
 def _homogeneous_transform(

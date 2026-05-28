@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
   Activity,
@@ -35,6 +35,9 @@ const MODE_LABELS = {
 };
 const JOINT_COLORS = ["#0b5fff", "#0f9f6e", "#d97706", "#dc2626", "#7c3aed", "#0891b2", "#334155"];
 const HOME_Q = [0, 0, 0, -1.57079, 0, 1.57079, -0.7853];
+const RENDER_WIDTH = 640;
+const RENDER_HEIGHT = 360;
+const RENDER_FPS = 15;
 
 function App() {
   const [telemetry, setTelemetry] = useState(null);
@@ -152,7 +155,7 @@ function App() {
 
       <section className="grid">
         <Panel title="3D MuJoCo Viewport" number="1" icon={<Box size={18} />} className="viewport-panel">
-          <RobotViewport q={q} ee={telemetry?.ee_position} connected={connected} />
+          <MuJoCoViewport telemetry={telemetry} telemetryConnected={connected} />
         </Panel>
 
         <Panel title="Mode Selector" number="2" icon={<Settings2 size={18} />} className="mode-panel">
@@ -313,46 +316,162 @@ function Metric({ label, value }) {
   );
 }
 
-function RobotViewport({ q, ee, connected }) {
-  const points = useMemo(() => projectArm(q), [q]);
-  const path = points.map((p) => `${p.x},${p.y}`).join(" ");
+function MuJoCoViewport({ telemetry, telemetryConnected }) {
+  const canvasRef = useRef(null);
+  const render = useMuJoCoRender(canvasRef);
+  const ee = telemetry?.ee_position ?? [0, 0, 0];
+  const statusText = render.error ? "error" : render.connected ? "live" : "connecting";
+
   return (
-    <div className="viewport">
-      <svg viewBox="0 0 520 360" role="img" aria-label="Robot arm visualization">
-        <defs>
-          <pattern id="grid" width="28" height="28" patternUnits="userSpaceOnUse">
-            <path d="M 28 0 L 0 0 0 28" fill="none" stroke="#dbe4f0" strokeWidth="1" />
-          </pattern>
-          <linearGradient id="linkGradient" x1="0" x2="1">
-            <stop offset="0" stopColor="#f8fafc" />
-            <stop offset="1" stopColor="#94a3b8" />
-          </linearGradient>
-        </defs>
-        <rect x="30" y="30" width="460" height="280" fill="url(#grid)" rx="6" />
-        <line x1="80" y1="300" x2="145" y2="300" stroke="#dc2626" strokeWidth="3" />
-        <line x1="80" y1="300" x2="80" y2="235" stroke="#0b5fff" strokeWidth="3" />
-        <line x1="80" y1="300" x2="128" y2="268" stroke="#0f9f6e" strokeWidth="3" />
-        <text x="150" y="304" className="axis red">X</text>
-        <text x="72" y="230" className="axis blue">Z</text>
-        <text x="132" y="264" className="axis green">Y</text>
-        <ellipse cx="250" cy="304" rx="72" ry="18" fill="#cbd5e1" opacity="0.5" />
-        <rect x="204" y="270" width="92" height="34" rx="5" fill="#e2e8f0" stroke="#64748b" />
-        <polyline points={path} fill="none" stroke="#475569" strokeWidth="22" strokeLinecap="round" strokeLinejoin="round" />
-        <polyline points={path} fill="none" stroke="url(#linkGradient)" strokeWidth="16" strokeLinecap="round" strokeLinejoin="round" />
-        {points.map((point, index) => (
-          <g key={index}>
-            <circle cx={point.x} cy={point.y} r={index === 0 ? 15 : 11} fill="#e5e7eb" stroke="#334155" strokeWidth="3" />
-            <circle cx={point.x} cy={point.y} r="4" fill={JOINT_COLORS[index % JOINT_COLORS.length]} />
-          </g>
-        ))}
-        <circle cx={points.at(-1).x} cy={points.at(-1).y} r="7" fill={connected ? "#0f9f6e" : "#dc2626"} />
-      </svg>
+    <div className="viewport render-viewport">
+      <canvas
+        ref={canvasRef}
+        width={render.width}
+        height={render.height}
+        role="img"
+        aria-label="Live MuJoCo 3D render"
+      />
+      {(!render.connected || render.error) && (
+        <div className="render-placeholder">
+          <Radio size={20} />
+          <strong>{render.error ? "Render unavailable" : "Starting render"}</strong>
+          <span>{render.error ?? "Waiting for MuJoCo frames"}</span>
+        </div>
+      )}
+      <div className="render-badges">
+        <span className={`render-chip ${render.error ? "bad" : render.connected ? "ok" : ""}`}>{statusText}</span>
+        <span className="render-chip">{formatNumber(render.fps, 1)} fps</span>
+        <span className={`render-chip ${telemetryConnected ? "ok" : ""}`}>{telemetryConnected ? "telemetry" : "polling"}</span>
+      </div>
       <div className="viewport-readout">
         <span>ee</span>
-        <strong>{(ee ?? [0, 0, 0]).map((v) => formatNumber(v, 3)).join(", ")}</strong>
+        <strong>{ee.map((v) => formatNumber(v, 3)).join(", ")}</strong>
       </div>
     </div>
   );
+}
+
+function useMuJoCoRender(canvasRef) {
+  const [state, setState] = useState({
+    connected: false,
+    error: null,
+    fps: 0,
+    frames: 0,
+    height: RENDER_HEIGHT,
+    width: RENDER_WIDTH
+  });
+
+  useEffect(() => {
+    let socket;
+    let reconnectTimer;
+    let closed = false;
+    let context;
+    let imageData;
+    let framesThisSecond = 0;
+    let lastFpsTick = performance.now();
+
+    const drawFrame = (buffer) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      if (!context) context = canvas.getContext("2d", { alpha: false });
+      if (!context) return;
+      if (!imageData) imageData = context.createImageData(RENDER_WIDTH, RENDER_HEIGHT);
+
+      const rgb = new Uint8Array(buffer);
+      const expectedLength = RENDER_WIDTH * RENDER_HEIGHT * 3;
+      if (rgb.length !== expectedLength) {
+        setState((current) => ({
+          ...current,
+          connected: false,
+          error: `Frame size ${rgb.length} != ${expectedLength}`
+        }));
+        return;
+      }
+
+      const rgba = imageData.data;
+      for (let source = 0, target = 0; source < expectedLength; source += 3, target += 4) {
+        rgba[target] = rgb[source];
+        rgba[target + 1] = rgb[source + 1];
+        rgba[target + 2] = rgb[source + 2];
+        rgba[target + 3] = 255;
+      }
+      context.putImageData(imageData, 0, 0);
+
+      framesThisSecond += 1;
+      const now = performance.now();
+      const elapsed = now - lastFpsTick;
+      if (elapsed >= 1000) {
+        const measuredFps = (framesThisSecond * 1000) / elapsed;
+        setState((current) => ({
+          ...current,
+          connected: true,
+          error: null,
+          fps: measuredFps,
+          frames: current.frames + framesThisSecond
+        }));
+        framesThisSecond = 0;
+        lastFpsTick = now;
+      }
+    };
+
+    const connect = () => {
+      const scheme = window.location.protocol === "https:" ? "wss" : "ws";
+      const params = new URLSearchParams({
+        width: String(RENDER_WIDTH),
+        height: String(RENDER_HEIGHT),
+        fps: String(RENDER_FPS)
+      });
+      socket = new WebSocket(`${scheme}://${window.location.host}/ws/render?${params}`);
+      socket.binaryType = "arraybuffer";
+
+      socket.onopen = () => {
+        setState((current) => ({ ...current, connected: true, error: null }));
+      };
+
+      socket.onmessage = (event) => {
+        if (typeof event.data === "string") {
+          const message = JSON.parse(event.data);
+          if (message.type === "render-info") {
+            setState((current) => ({
+              ...current,
+              width: message.width ?? RENDER_WIDTH,
+              height: message.height ?? RENDER_HEIGHT
+            }));
+          }
+          if (message.type === "render-error") {
+            setState((current) => ({
+              ...current,
+              connected: false,
+              error: message.message ?? "Render error",
+              fps: 0
+            }));
+          }
+          return;
+        }
+        drawFrame(event.data);
+      };
+
+      socket.onclose = () => {
+        if (closed) return;
+        setState((current) => ({ ...current, connected: false, fps: 0 }));
+        reconnectTimer = window.setTimeout(connect, 1000);
+      };
+
+      socket.onerror = () => {
+        setState((current) => ({ ...current, connected: false, error: "Render socket error", fps: 0 }));
+        socket.close();
+      };
+    };
+
+    connect();
+    return () => {
+      closed = true;
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+      if (socket) socket.close();
+    };
+  }, [canvasRef]);
+
+  return state;
 }
 
 function JointSliders({ q, liveQ, limits, onChange }) {
@@ -549,24 +668,6 @@ function Row({ label, value }) {
       <strong>{value}</strong>
     </div>
   );
-}
-
-function projectArm(q) {
-  const base = { x: 250, y: 275 };
-  const lengths = [48, 58, 50, 45, 38, 30, 24];
-  const points = [base];
-  let angle = -Math.PI / 2.3;
-  let lift = 0;
-  for (let i = 0; i < 7; i += 1) {
-    angle += (q[i] ?? 0) * (i % 2 === 0 ? 0.42 : -0.34);
-    lift += Math.sin(q[i] ?? 0) * 4;
-    const previous = points.at(-1);
-    points.push({
-      x: previous.x + Math.cos(angle) * lengths[i],
-      y: previous.y + Math.sin(angle) * lengths[i] - lift
-    });
-  }
-  return points;
 }
 
 function jointSeries(key) {
