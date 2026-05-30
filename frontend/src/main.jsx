@@ -89,9 +89,9 @@ function App() {
       headers: body ? { "Content-Type": "application/json" } : undefined,
       body: body ? JSON.stringify(body) : undefined
     });
-    const data = await response.json();
+    const data = await readJsonResponse(response);
     if (!response.ok) {
-      throw new Error(data?.detail?.message ?? data?.detail?.message ?? JSON.stringify(data.detail ?? data));
+      throw new Error(formatApiError(data, response));
     }
     setTelemetry(data);
     return data;
@@ -303,7 +303,10 @@ function useTelemetry(setTelemetry, setConnected, setStatusText) {
       pollId = window.setInterval(async () => {
         try {
           const response = await fetch(`${API_BASE}/api/state`);
-          const data = await response.json();
+          const data = await readJsonResponse(response);
+          if (!response.ok) {
+            throw new Error(formatApiError(data, response));
+          }
           setTelemetry(data);
           setConnected(false);
         } catch {
@@ -319,6 +322,41 @@ function useTelemetry(setTelemetry, setConnected, setStatusText) {
       if (pollId) window.clearInterval(pollId);
     };
   }, [setConnected, setStatusText, setTelemetry]);
+}
+
+async function readJsonResponse(response) {
+  const text = await response.text();
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { detail: text };
+  }
+}
+
+function formatApiError(data, response) {
+  const detail = data?.detail ?? data;
+  const fallback = `Request failed with HTTP ${response.status}`;
+
+  if (typeof detail === "string" && detail.trim()) return detail;
+  if (Array.isArray(detail)) {
+    return detail.map(formatValidationError).filter(Boolean).join("; ") || fallback;
+  }
+  if (detail && typeof detail === "object") {
+    if (typeof detail.message === "string") return detail.message;
+    if (typeof detail.msg === "string") return detail.msg;
+    if (typeof detail.error === "string") return detail.error;
+    return JSON.stringify(detail);
+  }
+
+  return fallback;
+}
+
+function formatValidationError(item) {
+  if (!item || typeof item !== "object") return String(item ?? "");
+  const location = Array.isArray(item.loc) ? item.loc.join(".") : "";
+  const message = item.msg ?? JSON.stringify(item);
+  return location ? `${location}: ${message}` : String(message);
 }
 
 function Panel({ title, icon, info, className = "", children }) {

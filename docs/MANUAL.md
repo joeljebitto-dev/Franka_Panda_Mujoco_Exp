@@ -546,11 +546,11 @@ http://127.0.0.1:5173
 The dashboard includes:
 
 - 7-joint sliders with live measured joint values.
-- Manual, PID, IK, trajectory, and reserved AI modes.
+- Manual, PID, IK, trajectory, and Python control modes.
 - Cartesian IK target input with optional orientation.
 - PID gain editing.
-- End-effector pose, rotation matrix, Euler angles, and quaternion.
-- Homogeneous transform matrix.
+- Live MuJoCo render stream with orbit, pan, zoom, and reset camera controls.
+- End-effector position and Euler orientation readouts.
 - 6x7 Jacobian heatmap and condition number.
 - Live joint/error plots.
 - WebSocket telemetry and event log.
@@ -558,15 +558,19 @@ The dashboard includes:
 Implemented endpoints:
 
 ```text
+GET  /api/health             backend health and robot DOF
 GET  /api/state              current q, qd, ctrl, end-effector pose
-POST /api/control/mode       manual, pid, ik, trajectory, ai
+POST /api/control/mode       manual, pid, ik, trajectory, python
 POST /api/control/running    pause or resume simulator stepping
 POST /api/reset              reset to home
 POST /api/target/joint       7 joint targets
 POST /api/target/cartesian   position plus optional orientation target
 POST /api/pid                PID gains
 POST /api/trajectory/start   start a generated trajectory
-WS   /ws/telemetry       live state stream
+POST /api/kinematics/fk      FK, transform, Jacobian, and condition number
+POST /api/kinematics/ik      solve IK and optionally apply the result
+WS   /ws/telemetry           live state stream
+WS   /ws/render              RGB MuJoCo render stream
 ```
 
 Example telemetry payload:
